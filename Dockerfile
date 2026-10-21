@@ -1,5 +1,5 @@
-# PHP 8.4.27 直接用 php.net 官方源码编译（下载后校验 sha256 + GPG 签名）
-# 编译步骤原样取自官方镜像 https://github.com/docker-library/php/blob/e3eaff8/8.4/alpine3.23/fpm/Dockerfile
+# PHP 8.2.35 直接用 php.net 官方源码编译（下载后校验 sha256 + GPG 签名）
+# 编译步骤原样取自官方镜像 https://github.com/docker-library/php/blob/e3eaff8/8.2/alpine3.23/fpm/Dockerfile
 # php/ 目录下的 docker-php-* 脚本也来自同一 commit；升级 PHP 时改 PHP_VERSION/PHP_URL/PHP_ASC_URL/PHP_SHA256 即可
 # OpenResty 官方 alpine 镜像基于 alpine 3.23，PHP 也用 alpine 3.23 保证 /usr/local/openresty 拷过来能直接跑
 ARG RESTY_IMAGE=openresty/openresty:1.31.1.1-4-alpine
@@ -56,11 +56,11 @@ ENV PHP_CFLAGS="-fstack-protector-strong -fpic -fpie -O2 -D_LARGEFILE_SOURCE -D_
 ENV PHP_CPPFLAGS="$PHP_CFLAGS"
 ENV PHP_LDFLAGS="-Wl,-O1 -pie"
 
-ENV GPG_KEYS AFD8691FDAEDF03BDF6E460563F15A9B715376CA 9D7F99A0CB8F05C8A6958D6256A97AF7600A39A6 0616E93D95AF471243E26761770426E17EBBB3DD
+ENV GPG_KEYS 39B641343D8C104B2B146DC3F9C39DC0B9698544 E60913E4DF209907D8E30D96659A97C9CF2A795A 1198C0117593497A5EC5C199286AF1F9897469DC
 
-ENV PHP_VERSION 8.4.27
-ENV PHP_URL="https://www.php.net/distributions/php-8.4.27.tar.xz" PHP_ASC_URL="https://www.php.net/distributions/php-8.4.27.tar.xz.asc"
-ENV PHP_SHA256="dcf93923b0e38e0d5252b25b796520b5a47761a08b3488b6d0b5d1115764d3f0"
+ENV PHP_VERSION 8.2.35
+ENV PHP_URL="https://www.php.net/distributions/php-8.2.35.tar.xz" PHP_ASC_URL="https://www.php.net/distributions/php-8.2.35.tar.xz.asc"
+ENV PHP_SHA256="5737b98601fe5ab1b8c5db0c82ed3158acb9283ed3081ffe2faffb9ac81455e6"
 
 RUN set -eux; \
 	\
@@ -169,6 +169,10 @@ RUN set -eux; \
 # in PHP 7.4+, the pecl/pear installers are officially deprecated (requiring an explicit "--with-pear")
 		--with-pear \
 		\
+# bundled pcre does not support JIT on riscv64 until 10.41 (php 8.3+)
+# https://github.com/PCRE2Project/pcre2/commits/pcre2-10.41/src/sljit/sljitNativeRISCV_64.c
+# https://github.com/php/php-src/tree/php-8.3.0/ext/pcre/pcre2lib
+		$(test "$gnuArch" = 'riscv64-linux-musl' && echo '--without-pcre-jit') \
 		\
 		--disable-cgi \
 		\
@@ -272,7 +276,7 @@ STOPSIGNAL SIGQUIT
 
 # ---------- 以下为 php_openresty 自定义部分 ----------
 LABEL Maintainer="Archon <archon@hellotalk.com>" \
-      Description="Lightweight container with Openresty & PHP-FPM 8.4 based on Alpine Linux."
+      Description="Lightweight container with Openresty & PHP-FPM 8.2 based on Alpine Linux."
 
 # openresty 运行时依赖（同官方 openresty alpine 镜像）
 RUN apk --no-cache add curl gd geoip libgcc libxslt tzdata zlib

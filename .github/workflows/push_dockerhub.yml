@@ -32,4 +32,4 @@ jobs:
           # 线上 docker 1.13 拉不了 OCI index，关掉 provenance 让 buildx 输出 docker v2 manifest
           provenance: false
           # 不覆盖 latest：线上 php 7 容器还在用 latest
-          tags: lilien1010/php_openresty:php8.4
+          tags: lilien1010/php_openresty:php8.2
