@@ -28,8 +28,8 @@ jobs:
         with:
           context: .
           platforms: linux/amd64
-          push: true
-          # 线上 docker 1.13 拉不了 OCI index，关掉 provenance 让 buildx 输出 docker v2 manifest
+          # 线上 docker 1.13 只认 docker v2 manifest：关掉 provenance，且不用 OCI media type
           provenance: false
+          outputs: type=registry,oci-mediatypes=false
           # 不覆盖 latest：线上 php 7 容器还在用 latest
           tags: lilien1010/php_openresty:php8.2
