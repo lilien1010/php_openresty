@@ -1,182 +1,308 @@
-FROM alpine:3.10 as builder
-# Dockerfile - alpine
-# https://github.com/openresty/docker-openresty
+# PHP 8.4.27 直接用 php.net 官方源码编译（下载后校验 sha256 + GPG 签名）
+# 编译步骤原样取自官方镜像 https://github.com/docker-library/php/blob/e3eaff8/8.4/alpine3.23/fpm/Dockerfile
+# php/ 目录下的 docker-php-* 脚本也来自同一 commit；升级 PHP 时改 PHP_VERSION/PHP_URL/PHP_ASC_URL/PHP_SHA256 即可
+# OpenResty 官方 alpine 镜像基于 alpine 3.23，PHP 也用 alpine 3.23 保证 /usr/local/openresty 拷过来能直接跑
+ARG RESTY_IMAGE=openresty/openresty:1.31.1.1-4-alpine
 
-# Docker Build Arguments
-ARG RESTY_VERSION="1.15.8.2"
-ARG RESTY_OPENSSL_VERSION="1.1.1c"
-ARG RESTY_PCRE_VERSION="8.43"
-ARG RESTY_J="48"
-ARG RESTY_CONFIG_OPTIONS="\
-    --with-compat \
-    --with-file-aio \
-    --with-http_addition_module \
-    --with-http_auth_request_module \
-    --with-http_dav_module \
-    --with-http_flv_module \
-    --with-http_geoip_module=dynamic \
-    --with-http_gunzip_module \
-    --with-http_gzip_static_module \
-    --with-http_image_filter_module=dynamic \
-    --with-http_mp4_module \
-    --with-http_random_index_module \
-    --with-http_realip_module \
-    --with-http_secure_link_module \
-    --with-http_slice_module \
-    --with-http_ssl_module \
-    --with-http_stub_status_module \
-    --with-http_sub_module \
-    --with-http_v2_module \
-    --with-http_xslt_module=dynamic \
-    --with-ipv6 \
-    --with-mail \
-    --with-mail_ssl_module \
-    --with-md5-asm \
-    --with-pcre-jit \
-    --with-sha1-asm \
-    --with-stream \
-    --with-stream_ssl_module \
-    --with-threads \
-    "
-ARG RESTY_CONFIG_OPTIONS_MORE=""
-ARG RESTY_LUAJIT_OPTIONS="--with-luajit-xcflags='-DLUAJIT_NUMMODE=2 -DLUAJIT_ENABLE_LUA52COMPAT'"
+FROM ${RESTY_IMAGE} AS resty
 
-ARG RESTY_ADD_PACKAGE_BUILDDEPS=""
-ARG RESTY_ADD_PACKAGE_RUNDEPS=""
-ARG RESTY_EVAL_PRE_CONFIGURE=""
-ARG RESTY_EVAL_POST_MAKE=""
+FROM alpine:3.23
 
-# These are not intended to be user-specified
-ARG _RESTY_CONFIG_DEPS="--with-pcre \
-    --with-cc-opt='-DNGX_LUA_ABORT_AT_PANIC -I/usr/local/openresty/pcre/include -I/usr/local/openresty/openssl/include' \
-    --with-ld-opt='-L/usr/local/openresty/pcre/lib -L/usr/local/openresty/openssl/lib -Wl,-rpath,/usr/local/openresty/pcre/lib:/usr/local/openresty/openssl/lib' \
-    "
+# dependencies required for running "phpize"
+# these get automatically installed and removed by "docker-php-ext-*" (unless they're already installed)
+ENV PHPIZE_DEPS \
+		autoconf \
+		dpkg-dev dpkg \
+		file \
+		g++ \
+		gcc \
+		libc-dev \
+		make \
+		pkgconf \
+		re2c
 
-LABEL resty_image_base="${RESTY_IMAGE_BASE}"
-LABEL resty_image_tag="${RESTY_IMAGE_TAG}"
-LABEL resty_version="${RESTY_VERSION}"
-LABEL resty_openssl_version="${RESTY_OPENSSL_VERSION}"
-LABEL resty_pcre_version="${RESTY_PCRE_VERSION}"
-LABEL resty_config_options="${RESTY_CONFIG_OPTIONS}"
-LABEL resty_config_options_more="${RESTY_CONFIG_OPTIONS_MORE}"
-LABEL resty_config_deps="${_RESTY_CONFIG_DEPS}"
-LABEL resty_add_package_builddeps="${RESTY_ADD_PACKAGE_BUILDDEPS}"
-LABEL resty_add_package_rundeps="${RESTY_ADD_PACKAGE_RUNDEPS}"
-LABEL resty_eval_pre_configure="${RESTY_EVAL_PRE_CONFIGURE}"
-LABEL resty_eval_post_make="${RESTY_EVAL_POST_MAKE}"
+# persistent / runtime deps
+RUN apk add --no-cache \
+		ca-certificates \
+		curl \
+		openssl \
+		tar \
+		xz
 
+# ensure www-data user exists
+RUN set -eux; \
+	adduser -u 82 -D -S -G www-data www-data
+# 82 is the standard uid/gid for "www-data" in Alpine
+# https://git.alpinelinux.org/aports/tree/main/apache2/apache2.pre-install?h=3.14-stable
+# https://git.alpinelinux.org/aports/tree/main/lighttpd/lighttpd.pre-install?h=3.14-stable
+# https://git.alpinelinux.org/aports/tree/main/nginx/nginx.pre-install?h=3.14-stable
 
-RUN apk add --no-cache --virtual .build-deps \
-        build-base \
-        coreutils \
-        curl \
-        gd-dev \
-        geoip-dev \
-        libxslt-dev \
-        linux-headers \
-        make \
-        perl-dev \
-        readline-dev \
-        zlib-dev \
-        ${RESTY_ADD_PACKAGE_BUILDDEPS} \
-    && apk add --no-cache \
-        gd \
-        geoip \
-        libgcc \
-        libxslt \
-        zlib \
-        ${RESTY_ADD_PACKAGE_RUNDEPS} \
-    && cd /tmp \
-    && if [ -n "${RESTY_EVAL_PRE_CONFIGURE}" ]; then eval $(echo ${RESTY_EVAL_PRE_CONFIGURE}); fi \
-    && cd /tmp \
-    && curl -fSL https://www.openssl.org/source/openssl-${RESTY_OPENSSL_VERSION}.tar.gz -o openssl-${RESTY_OPENSSL_VERSION}.tar.gz \
-    && tar xzf openssl-${RESTY_OPENSSL_VERSION}.tar.gz \
-    && cd openssl-${RESTY_OPENSSL_VERSION} \
-    && if [ $(echo ${RESTY_OPENSSL_VERSION} | cut -c 1-5) = "1.1.1" ] ; then \
-        echo 'patching OpenSSL 1.1.1 for OpenResty' \
-        && curl -s https://raw.githubusercontent.com/openresty/openresty/master/patches/openssl-1.1.1c-sess_set_get_cb_yield.patch | patch -p1 ; \
-    fi \
-    && if [ $(echo ${RESTY_OPENSSL_VERSION} | cut -c 1-5) = "1.1.0" ] ; then \
-        echo 'patching OpenSSL 1.1.0 for OpenResty' \
-        && curl -s https://raw.githubusercontent.com/openresty/openresty/ed328977028c3ec3033bc25873ee360056e247cd/patches/openssl-1.1.0j-parallel_build_fix.patch | patch -p1 \
-        && curl -s https://raw.githubusercontent.com/openresty/openresty/master/patches/openssl-1.1.0d-sess_set_get_cb_yield.patch | patch -p1 ; \
-    fi \
-    && ./config \
-      no-threads shared zlib -g \
-      enable-ssl3 enable-ssl3-method \
-      --prefix=/usr/local/openresty/openssl \
-      --libdir=lib \
-      -Wl,-rpath,/usr/local/openresty/openssl/lib \
-    && make -j${RESTY_J} \
-    && make -j${RESTY_J} install_sw \
-    && cd /tmp \
-    && curl -fSL https://ftp.pcre.org/pub/pcre/pcre-${RESTY_PCRE_VERSION}.tar.gz -o pcre-${RESTY_PCRE_VERSION}.tar.gz \
-    && tar xzf pcre-${RESTY_PCRE_VERSION}.tar.gz \
-    && cd /tmp/pcre-${RESTY_PCRE_VERSION} \
-    && ./configure \
-        --prefix=/usr/local/openresty/pcre \
-        --disable-cpp \
-        --enable-jit \
-        --enable-utf \
-        --enable-unicode-properties \
-    && make -j${RESTY_J} \
-    && make -j${RESTY_J} install \
-    && cd /tmp \
-    && curl -fSL https://github.com/openresty/openresty/releases/download/v${RESTY_VERSION}/openresty-${RESTY_VERSION}.tar.gz -o openresty-${RESTY_VERSION}.tar.gz \
-    && tar xzf openresty-${RESTY_VERSION}.tar.gz \
-    && cd /tmp/openresty-${RESTY_VERSION} \
-    && eval ./configure -j${RESTY_J} ${_RESTY_CONFIG_DEPS} ${RESTY_CONFIG_OPTIONS} ${RESTY_CONFIG_OPTIONS_MORE} ${RESTY_LUAJIT_OPTIONS} \
-    && make -j${RESTY_J} \
-    && make -j${RESTY_J} install \
-    && cd /tmp \
-    && if [ -n "${RESTY_EVAL_POST_MAKE}" ]; then eval $(echo ${RESTY_EVAL_POST_MAKE}); fi \
-    && rm -rf \
-        openssl-${RESTY_OPENSSL_VERSION}.tar.gz openssl-${RESTY_OPENSSL_VERSION} \
-        pcre-${RESTY_PCRE_VERSION}.tar.gz pcre-${RESTY_PCRE_VERSION} \
-        openresty-${RESTY_VERSION}.tar.gz openresty-${RESTY_VERSION} \
-    && apk del .build-deps \
-    && mkdir -p /var/run/openresty \
-    && ln -sf /dev/stdout /usr/local/openresty/nginx/logs/access.log \
-    && ln -sf /dev/stderr /usr/local/openresty/nginx/logs/error.log
+ENV PHP_INI_DIR /usr/local/etc/php
+RUN set -eux; \
+	mkdir -p "$PHP_INI_DIR/conf.d"; \
+# allow running as an arbitrary user (https://github.com/docker-library/php/issues/743)
+	[ ! -d /var/www/html ]; \
+	mkdir -p /var/www/html; \
+	chown www-data:www-data /var/www/html; \
+	chmod 1777 /var/www/html
 
+# Apply stack smash protection to functions using local buffers and alloca()
+# Make PHP's main executable position-independent (improves ASLR security mechanism, and has no performance impact on x86_64)
+# Enable optimization (-O2)
+# Enable linker optimization (this sorts the hash buckets to improve cache locality, and is non-default)
+# https://github.com/docker-library/php/issues/272
+# -D_LARGEFILE_SOURCE and -D_FILE_OFFSET_BITS=64 (https://www.php.net/manual/en/intro.filesystem.php)
+ENV PHP_CFLAGS="-fstack-protector-strong -fpic -fpie -O2 -D_LARGEFILE_SOURCE -D_FILE_OFFSET_BITS=64"
+ENV PHP_CPPFLAGS="$PHP_CFLAGS"
+ENV PHP_LDFLAGS="-Wl,-O1 -pie"
 
-FROM alpine:3.10 as prod
+ENV GPG_KEYS AFD8691FDAEDF03BDF6E460563F15A9B715376CA 9D7F99A0CB8F05C8A6958D6256A97AF7600A39A6 0616E93D95AF471243E26761770426E17EBBB3DD
+
+ENV PHP_VERSION 8.4.27
+ENV PHP_URL="https://www.php.net/distributions/php-8.4.27.tar.xz" PHP_ASC_URL="https://www.php.net/distributions/php-8.4.27.tar.xz.asc"
+ENV PHP_SHA256="dcf93923b0e38e0d5252b25b796520b5a47761a08b3488b6d0b5d1115764d3f0"
+
+RUN set -eux; \
+	\
+	apk add --no-cache --virtual .fetch-deps gnupg; \
+	\
+	mkdir -p /usr/src; \
+	cd /usr/src; \
+	\
+	curl -fsSL -o php.tar.xz "$PHP_URL"; \
+	\
+	if [ -n "$PHP_SHA256" ]; then \
+		echo "$PHP_SHA256 *php.tar.xz" | sha256sum -c -; \
+	fi; \
+	\
+	curl -fsSL -o php.tar.xz.asc "$PHP_ASC_URL"; \
+	export GNUPGHOME="$(mktemp -d)"; \
+	for key in $GPG_KEYS; do \
+		gpg --batch --keyserver keyserver.ubuntu.com --recv-keys "$key"; \
+	done; \
+	gpg --batch --verify php.tar.xz.asc php.tar.xz; \
+	gpgconf --kill all; \
+	rm -rf "$GNUPGHOME"; \
+	\
+	apk del --no-network .fetch-deps
+
+COPY php/docker-php-source /usr/local/bin/
+
+RUN set -eux; \
+	apk add --no-cache --virtual .build-deps \
+		$PHPIZE_DEPS \
+		argon2-dev \
+		coreutils \
+		curl-dev \
+		gnu-libiconv-dev \
+		libsodium-dev \
+		libxml2-dev \
+		linux-headers \
+		oniguruma-dev \
+		openssl-dev \
+		readline-dev \
+		sqlite-dev \
+	; \
+	\
+# make sure musl's iconv doesn't get used (https://www.php.net/manual/en/intro.iconv.php)
+	rm -vf /usr/include/iconv.h; \
+	\
+	export \
+		CFLAGS="$PHP_CFLAGS" \
+		CPPFLAGS="$PHP_CPPFLAGS" \
+		LDFLAGS="$PHP_LDFLAGS" \
+# https://github.com/php/php-src/blob/d6299206dd828382753453befd1b915491b741c6/configure.ac#L1496-L1511
+		PHP_BUILD_PROVIDER='https://github.com/docker-library/php' \
+		PHP_UNAME='Linux - Docker' \
+	; \
+	docker-php-source extract; \
+	cd /usr/src/php; \
+	gnuArch="$(dpkg-architecture --query DEB_BUILD_GNU_TYPE)"; \
+	case "$gnuArch" in \
+		'i686-linux-'*) \
+			# php zend jit assumes SSE registers, xmm0-7, are available (and "Pentium4"/SSE2 is a reasonable baseline)
+			# https://github.com/php/php-src/pull/22832
+			# so, allow it and use SSE/SSE2 floating-point unit instead of the legacy stack
+			export \
+				CFLAGS="$CFLAGS -msse2 -mfpmath=sse" \
+				CPPFLAGS="$CPPFLAGS -msse2 -mfpmath=sse" \
+			; \
+			;; \
+	esac; \
+	test "$PHP_INI_DIR" != "${PHP_INI_DIR%/php}"; \
+	./configure \
+		--build="$gnuArch" \
+		--sysconfdir="${PHP_INI_DIR%/php}" \
+		--with-config-file-path="$PHP_INI_DIR" \
+		--with-config-file-scan-dir="$PHP_INI_DIR/conf.d" \
+		\
+# make sure invalid --configure-flags are fatal errors instead of just warnings
+		--enable-option-checking=fatal \
+		\
+# https://github.com/docker-library/php/issues/439
+		--with-mhash \
+		\
+# https://github.com/docker-library/php/issues/822
+		--with-pic \
+		\
+# --enable-mbstring is included here because otherwise there's no way to get pecl to use it properly (see https://github.com/docker-library/php/issues/195)
+		--enable-mbstring \
+# --enable-mysqlnd is included here because it's harder to compile after the fact than extensions are (since it's a plugin for several extensions, not an extension in itself)
+		--enable-mysqlnd \
+# https://wiki.php.net/rfc/argon2_password_hash
+		--with-password-argon2 \
+# https://wiki.php.net/rfc/libsodium
+		--with-sodium=shared \
+# always build against system sqlite3 (https://github.com/php/php-src/commit/6083a387a81dbbd66d6316a3a12a63f06d5f7109)
+		--with-pdo-sqlite=/usr \
+		--with-sqlite3=/usr \
+		\
+		--with-curl \
+		--with-iconv=/usr \
+		--with-openssl \
+		--with-readline \
+		--with-zlib \
+		\
+# https://github.com/bwoebi/phpdbg-docs/issues/1#issuecomment-163872806 ("phpdbg is primarily a CLI debugger, and is not suitable for debugging an fpm stack.")
+		--disable-phpdbg \
+		\
+# in PHP 7.4+, the pecl/pear installers are officially deprecated (requiring an explicit "--with-pear")
+		--with-pear \
+		\
+		\
+		--disable-cgi \
+		\
+		--enable-fpm \
+		--with-fpm-user=www-data \
+		--with-fpm-group=www-data \
+	; \
+	make -j "$(nproc)"; \
+	find -type f -name '*.a' -delete; \
+	make install; \
+	find \
+		/usr/local \
+		-type f \
+		-perm '/0111' \
+		-exec sh -euxc ' \
+			strip --strip-all "$@" || : \
+		' -- '{}' + \
+	; \
+	make clean; \
+	\
+# https://github.com/docker-library/php/issues/692 (copy default example "php.ini" files somewhere easily discoverable)
+	cp -v php.ini-* "$PHP_INI_DIR/"; \
+	\
+	cd /; \
+	docker-php-source delete; \
+	\
+	runDeps="$( \
+		scanelf --needed --nobanner --format '%n#p' --recursive /usr/local \
+			| tr ',' '\n' \
+			| sort -u \
+			| awk 'system("[ -e /usr/local/lib/" $1 " ]") == 0 { next } { print "so:" $1 }' \
+	)"; \
+	apk add --no-cache $runDeps; \
+	\
+	apk del --no-network .build-deps; \
+	\
+# update pecl channel definitions https://github.com/docker-library/php/issues/443
+	pecl update-channels; \
+	rm -rf /tmp/pear ~/.pearrc; \
+	\
+# smoke test
+	php --version
+
+COPY php/docker-php-ext-* php/docker-php-entrypoint /usr/local/bin/
+
+# enable OPcache by default (https://wiki.php.net/rfc/make_opcache_required)
+RUN docker-php-ext-enable opcache
+
+# sodium was built as a shared module (so that it can be replaced later if so desired), so let's enable it too (https://github.com/docker-library/php/issues/598)
+RUN docker-php-ext-enable sodium
+
+ENTRYPOINT ["docker-php-entrypoint"]
+WORKDIR /var/www/html
+
+RUN set -eux; \
+	cd "${PHP_INI_DIR%/php}"; \
+	\
+	cp -v php-fpm.conf.default php-fpm.conf; \
+	cp -v php-fpm.d/www.conf.default php-fpm.d/www.conf; \
+	\
+	# comment out localhost-only listen address
+	grep -E '^listen = 127.0.0.1:9000' php-fpm.d/www.conf; \
+	sed -ri 's/^(listen = 127.0.0.1:9000)/;\1/' php-fpm.d/www.conf; \
+	grep -E '^;listen = 127.0.0.1:9000' php-fpm.d/www.conf; \
+	\
+	{ \
+		echo '[global]'; \
+		echo 'error_log = /proc/self/fd/2'; \
+		echo; echo '; https://github.com/docker-library/php/pull/725#issuecomment-443540114'; echo 'log_limit = 8192'; \
+		echo; \
+		echo '[www]'; \
+		echo '; php-fpm closes STDOUT on startup, so sending logs to /proc/self/fd/1 does not work.'; \
+		echo '; https://bugs.php.net/bug.php?id=73886'; \
+		echo 'access.log = /proc/self/fd/2'; \
+		echo; \
+		echo 'clear_env = no'; \
+		echo; \
+		echo '; Ensure worker stdout and stderr are sent to the main error log.'; \
+		echo 'catch_workers_output = yes'; \
+		echo 'decorate_workers_output = no'; \
+		echo; \
+		echo '; default listen address for easy override in later php-fpm.d/*.conf files'; \
+		echo 'listen = 9000'; \
+	} | tee php-fpm.d/docker.conf; \
+	{ \
+		echo '[global]'; \
+		echo 'daemonize = no'; \
+		echo; \
+		echo '; the [www] ini section below is for backwards compatibility and will be removed in 8.6+'; \
+		echo '[www]'; \
+	} | tee php-fpm.d/zz-docker.conf; \
+	mkdir -p "$PHP_INI_DIR/conf.d"; \
+	{ \
+		echo '; https://github.com/docker-library/php/issues/878#issuecomment-938595965'; \
+		echo 'fastcgi.logging = Off'; \
+	} > "$PHP_INI_DIR/conf.d/docker-fpm.ini"
+
+# Override stop signal to stop process gracefully
+# https://github.com/php/php-src/blob/17baa87faddc2550def3ae7314236826bc1b1398/sapi/fpm/php-fpm.8.in#L163
+STOPSIGNAL SIGQUIT
+
+# ---------- 以下为 php_openresty 自定义部分 ----------
 LABEL Maintainer="Archon <archon@hellotalk.com>" \
-      Description="Lightweight container with Openresty latest & PHP-FPM 7.3 based on Alpine Linux."
+      Description="Lightweight container with Openresty & PHP-FPM 8.4 based on Alpine Linux."
 
-# Install packages
-RUN apk --no-cache add php7 php7-zlib php7-xml php7-zip php7-fileinfo php7-xmlwriter php7-phar php7-intl php7-dom php7-xmlreader php7-ctype php7-session \
-    php7-sockets php7-sockets php7-bcmath php7-pdo_mysql php7-pecl-protobuf php7-pdo php7-iconv php7-redis php7-memcached \
-    php7-mbstring php7-gd php7-json php7-fpm php7-curl php7-simplexml php7-xmlrpc curl 
+# openresty 运行时依赖（同官方 openresty alpine 镜像）
+RUN apk --no-cache add curl gd geoip libgcc libxslt tzdata zlib
 
-COPY --from=builder /usr/local/openresty /usr/local/openresty
+# 上面官方编译步骤已自带 ctype curl dom fileinfo iconv mbstring mysqlnd openssl pdo phar session simplexml xml xmlreader xmlwriter zlib
+# xmlrpc 在 PHP 8 已移出核心，业务代码未使用，不再安装
+COPY --from=mlocati/php-extension-installer:2.12.3 /usr/bin/install-php-extensions /usr/local/bin/
+RUN install-php-extensions bcmath gd intl pdo_mysql sockets zip igbinary redis memcached protobuf
+
+COPY --from=resty /usr/local/openresty /usr/local/openresty
+COPY --from=composer:2 /usr/bin/composer /usr/local/bin/composer
 
 # Add openresty to PATH
 ENV PATH=$PATH:/usr/local/openresty/luajit/bin:/usr/local/openresty/nginx/sbin:/usr/local/openresty/bin
 # Configure nginx
 COPY config/nginx.conf /usr/local/openresty/nginx/conf/nginx.conf
-# Configure PHP-FPM
-COPY config/fpm-pool.conf /etc/php7/php-fpm.d/www.conf
-COPY config/php.ini /etc/php7/conf.d/custom.ini
-
-# Install composer
-RUN curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer 
-
-# Setup document root
-RUN mkdir -p /var/www/html
-
-# Make the document root a volume
-VOLUME /var/www/html
+RUN mkdir -p /etc/nginx/conf.d /var/run/openresty
+# Configure PHP-FPM；www.conf 按字母序在 docker.conf 之后加载，会把 listen 覆盖回 127.0.0.1:9000
+COPY config/fpm-pool.conf /usr/local/etc/php-fpm.d/www.conf
+COPY config/php.ini /usr/local/etc/php/conf.d/custom.ini
 
 # Add application
 WORKDIR /var/www/html
+VOLUME /var/www/html
 COPY --chown=nobody ./src/ /var/www/html/
 
 # Expose the port nginx is reachable on
 EXPOSE 8080
 
-# Run openresty
-CMD ["sh", "-c", "php-fpm7 -F & openresty -g 'daemon off;'"]
+CMD ["sh", "-c", "php-fpm -F & openresty -g 'daemon off;'"]
 
 # Configure a healthcheck to validate that everything is up&running
 HEALTHCHECK --timeout=10s CMD curl --silent --fail http://127.0.0.1:8080/fpm-ping

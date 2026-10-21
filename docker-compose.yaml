@@ -3,7 +3,7 @@ services:
   php:
     image: hellotalk/php_openresty
     container_name: php_openresty
-    command: sh -c "php-fpm7 -F & openresty -g 'daemon off;'"
+    command: sh -c "php-fpm -F & openresty -g 'daemon off;'"
     ports:
       - 6666:8080
     volumes:
